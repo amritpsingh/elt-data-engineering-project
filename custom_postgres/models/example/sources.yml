@@ -1,0 +1,18 @@
+# custom_postgres/models/example/sources.yml
+
+version: 2
+
+sources:
+  - name: destination_db
+    description: "Raw data from destination PostgreSQL database."
+    database: destination_db
+    schema: public
+    tables:
+      - name: users
+        description: Table containing user information
+      - name: films
+        description: "Table containing film information"
+      - name: actors
+        description: "List of actors."
+      - name: film_actors
+        description: "Mapping between films and actors."

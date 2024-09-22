@@ -1,0 +1,172 @@
+# docker-compose.yaml
+
+services:
+  source_postgres:
+    image: postgres:15
+    ports:
+      - "5433:5432"
+    networks:
+      - elt_network
+    environment:
+      POSTGRES_DB: source_db
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin
+    volumes:
+      - ./source_db_init/init.sql:/docker-entrypoint-initdb.d/init.sql
+
+  destination_postgres:
+    image: postgres:15
+    ports:
+      - "5434:5432"
+    networks:
+      - elt_network
+    environment:
+      POSTGRES_DB: destination_db
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin
+
+  # elt_script:
+  #   build:
+  #     context: ./elt
+  #     dockerfile: Dockerfile
+  #   command: ["sh", "-c", "python elt_script.py && tail -f /dev/null"]
+  #   networks:
+  #     - elt_network
+  #   depends_on:
+  #     - source_postgres
+  #     - destination_postgres
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -h source_postgres || exit 1"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 5
+
+  # dbt:
+  #   image: ghcr.io/dbt-labs/dbt-postgres:1.8.2
+  #   command:
+  #     [
+  #       "run",
+  #       "--profiles-dir",
+  #       "/app/.dbt",
+  #       "--project-dir",
+  #       "/dbt"
+  #     ]
+  #   networks:
+  #     - elt_network
+  #   volumes:
+  #     - ./custom_postgres:/dbt
+  #     - /home/amrit/.dbt:/app/.dbt
+  #   depends_on:
+  #     elt_script:
+  #       condition: service_healthy
+  #   environment:
+  #     DBT_PROFILE: custom_postgres
+  #     DBT_TARGET: dev
+
+# database for airflow
+  airflow_postgres:
+    image: postgres:15
+    ports:
+      - "5435:5432"
+    networks:
+      - elt_network
+    environment:
+      POSTGRES_DB: airflow
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h source_postgres || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+# Initializing user and database for airflow  
+  init-airflow:
+    image: apache/airflow:2.9.3
+    depends_on:
+      airflow_postgres:
+        condition: service_healthy
+    networks:
+      - elt_network
+    environment:
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@airflow_postgres/airflow
+    command: >
+      bash -c "airflow db migrate && airflow users create --username airflow --password password --firstname john --lastname doe --role Admin --email admin@example.com && tail -f /dev/null"
+    healthcheck:
+      test: ["CMD-SHELL", "airflow db check"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    
+  webserver:
+    build:
+      context: .
+      dockerfile: Dockerfile
+#    user: root
+    depends_on:
+      init-airflow:
+        condition: service_healthy
+      airflow_postgres:
+        condition: service_healthy
+    networks:
+      - elt_network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./elt:/opt/airflow/elt
+      - ./custom_postgres:/opt/dbt
+      - /home/amrit/.dbt:/app/.dbt
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - LOAD_EX=n
+      - EXECUTOR=Local
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@airflow_postgres/airflow
+      - AIRFLOW__CORE__FERNET_KEY="TK2HWNbp_6ceQRa012Fkv-VEMYqcomDRtR-EJbgrofA="
+      - AIRFLOW__WEBSERVER__DEFAULT__USER_USERNAME=airflow
+      - AIRFLOW__WEBSERVER__DEFAULT__USER_PASSWORD=password
+      - AIRFLOW_WWW_USER_USERNAME=airflow
+      - AIRFLOW_WWW_USER_PASSWORD=password
+      - AIRFLOW__WEBSERVER__SECRET_KEY=service_healthy
+    ports:
+      - "8080:8080"
+    command: webserver
+  
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+#    user: root
+    depends_on:
+      init-airflow:
+        condition: service_healthy
+      airflow_postgres:
+        condition: service_healthy
+    networks:
+      - elt_network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./elt:/opt/airflow/elt
+      - ./custom_postgres:/opt/dbt
+      - /home/amrit/.dbt:/app/.dbt
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - LOAD_EX=n
+      - EXECUTOR=Local
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@airflow_postgres/airflow
+      - AIRFLOW__CORE__FERNET_KEY="TK2HWNbp_6ceQRa012Fkv-VEMYqcomDRtR-EJbgrofA="
+      - AIRFLOW__WEBSERVER__DEFAULT__USER_USERNAME=airflow
+      - AIRFLOW__WEBSERVER__DEFAULT__USER_PASSWORD=password
+      - AIRFLOW_WWW_USER_USERNAME=airflow
+      - AIRFLOW_WWW_USER_PASSWORD=password
+      - AIRFLOW__WEBSERVER__SECRET_KEY=service_healthy
+    ports:
+      - "8081:8080"
+    command: scheduler
+
+
+networks:
+  elt_network:
+    driver: bridge
